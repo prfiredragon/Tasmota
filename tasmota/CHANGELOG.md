@@ -1,13 +1,23 @@
 ## Unreleased (development)
 
+### 8.1.0.11 20200313
+
+- Add HAss Discovery support for Button and Switch triggers by Federico Leoni (#7901)
+- Add support for HDC1080 Temperature and Humidity sensor by Luis Teixeira (#7888)
+- Add commands ``SwitchMode 13`` PushOn and ``SwitchMode 14`` PushOnInverted (#7912)
+- Add Zigbee support for Hue emulation by Stefan Hadinger
+
 ### 8.1.0.10 20200227
 
 - Change default my_user_config.h driver and sensor support removing most sensors and adding most drivers
 - Change IRremoteESP8266 library updated to v2.7.4
-- Change switchmode 6 according to issue 7778 (#7831)
+- Revert switchmode 6 according to issue 7778 (#7831)
 - Add support for Jarolift rollers by Keeloq algorithm
 - Add Zigbee features and improvements and remove support for Zigbee commands starting with ``Zigbee...``
 - Add support for MaxBotix HRXL-MaxSonar ultrasonic range finders by Jon Little (#7814)
+- Add support for Romanian language translations by Augustin Marti
+- Add command ``SetOption89 0/1`` for Zigbee distinct MQTT topics per device for SENSOR, allowing retained messages (#7835)
+- Change Hue emulation code optimization
 
 ### 8.1.0.9 20200220
 
@@ -18,6 +28,9 @@
 - Add Zigbee enhanced commands decoding, added ``ZbPing``
 - Add commands ``SetOption85 0/1`` and ``DevGroupShare`` supporting UDP Group command using ``GroupTopic`` without MQTT by Paul Diem (#7790)
 - Add support for Martin Jerry/acenx/Tessan/NTONPOWER SD0x PWM dimmer switches by Paul Diem (#7791)
+- Add command ``SetOption86 0/1`` for PWM dimmer to turn brightness LED's off 5 seconds after last change
+- Add command ``SetOption87 0/1`` for PWM dimmer to turn red LED on when powered off
+- Add command ``SetOption88 0/1`` for PWM dimmer to let buttons control remote devices
 
 ### 8.1.0.8 20200212
 
@@ -50,7 +63,7 @@
 - Change wifi connectivity stability (#7602)
 - Change IRremoteESP8266 library updated to v2.7.3
 - Fix PWM flickering at low levels (#7415)
-- Add ``SetOption84 1`` sends AWS IoT device shadow updates (alternative to retained)
+- Add ``SetOption84 0/1`` sends AWS IoT device shadow updates (alternative to retained)
 - Add ``ZbBind`` (experimental) and bug fixes
 
 ### 8.1.0.4 20200116
@@ -63,7 +76,7 @@
 - Add Zigbee persistence and friendly names
 - Add most SetOptions as defines to my_user_config.h
 - Add SoftwareSerial to CSE7766 driver allowing different GPIOs (#7563)
-- Add optional parameter <startcolor> to command ``Scheme <scheme>, <startcolor>`` to control initial start color
+- Add optional parameter ``<startcolor>`` to command ``Scheme <scheme>, <startcolor>`` to control initial start color
 - Add rule trigger on one level deeper using syntax with two ``#`` like ``on zigbeereceived#vibration_sensor#aqaracubeside=0 do ...``
 
 ### 8.1.0.3 20200106
