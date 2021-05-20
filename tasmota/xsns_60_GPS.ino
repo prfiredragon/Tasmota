@@ -1,7 +1,7 @@
 /*
   xsns_60_GPS.ino - GPS UBLOX support for Tasmota
 
-  Copyright (C) 2020  Theo Arends, Christian Baars and Adrian Scillato
+  Copyright (C) 2021  Theo Arends, Christian Baars and Adrian Scillato
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -18,6 +18,10 @@
 */
 
 #ifdef USE_GPS
+#if defined(ESP32) && defined(USE_FLOG)
+  #undef USE_FLOG
+  #warning FLOG deactivated on ESP32
+#endif //ESP32
 /*********************************************************************************************\
   --------------------------------------------------------------------------------------------
   Version Date      Action    Description
@@ -94,7 +98,7 @@ The serial pins are GPS_RX and GPS_TX, no further installation steps needed. To 
   set latitude and longitude in settings
 
 + sensor60 14
-  open virtual serial port over TCP, usable for u-center 
+  open virtual serial port over TCP, usable for u-center
 
 + sensor60 15
   pause virtual serial port over TCP
@@ -129,6 +133,7 @@ const char kUBXTypes[] PROGMEM = "UBX";
 
 #define UBX_SERIAL_BUFFER_SIZE 256
 #define UBX_TCP_PORT           1234
+#define NTP_MILLIS_OFFSET      50              // estimated latency in milliseconds
 
 /********************************************************************************************\
 | *globals
@@ -251,7 +256,8 @@ struct UBX_t {
     uint32_t last_vAcc;
     uint8_t gpsFix;
     uint8_t non_empty_loops;   // in case of an unintended reset of the GPS, the serial interface will get flooded with NMEA
-    uint16_t log_interval;  // in tenth of seconds
+    uint16_t log_interval;     // in tenth of seconds
+    int32_t timeOffset;        // roughly computed offset millis() - iTOW
   } state;
 
   struct {
@@ -260,6 +266,7 @@ struct UBX_t {
     uint32_t send_when_new:1; // no teleinterval
     uint32_t send_UI_only:1;
     uint32_t runningNTP:1;
+    // uint32_t blockedNTP:1;
     uint32_t forceUTCupdate:1;
     uint32_t runningVPort:1;
     // TODO: more to come
@@ -322,15 +329,13 @@ void UBXinitCFG(void)
   DEBUG_SENSOR_LOG(PSTR("UBX: turn off NMEA"));
 }
 
-void UBXTriggerTele(void)
+void UBXsendCFGLine(uint8_t _line)
 {
-  mqtt_data[0] = '\0';
-  if (MqttShowSensor()) {
-    MqttPublishPrefixTopic_P(TELE, PSTR(D_RSLT_SENSOR), Settings.flag.mqtt_sensor_retain);
-#ifdef USE_RULES
-    RulesTeleperiod();  // Allow rule based HA messages
-#endif  // USE_RULES
+  if (_line>sizeof(UBLOX_INIT)/16) return;
+  for (uint32_t i = 0; i < 16; i++) {
+    UBXSerial->write( pgm_read_byte(UBLOX_INIT+i+(_line*16)) );
   }
+  DEBUG_SENSOR_LOG(PSTR("UBX: send line %u of UBLOX_INIT"), _line);
 }
 
 /********************************************************************************************/
@@ -338,8 +343,8 @@ void UBXTriggerTele(void)
 void UBXDetect(void)
 {
   UBX.mode.init = 0;
-  if ((pin[GPIO_GPS_RX] < 99) && (pin[GPIO_GPS_TX] < 99)) {
-    UBXSerial = new TasmotaSerial(pin[GPIO_GPS_RX], pin[GPIO_GPS_TX], 1, 0, UBX_SERIAL_BUFFER_SIZE); // 64 byte buffer is NOT enough
+  if (PinUsed(GPIO_GPS_RX) && PinUsed(GPIO_GPS_TX)) {
+    UBXSerial = new TasmotaSerial(Pin(GPIO_GPS_RX), Pin(GPIO_GPS_TX), 1, 0, UBX_SERIAL_BUFFER_SIZE); // 64 byte buffer is NOT enough
     if (UBXSerial->begin(9600)) {
       DEBUG_SENSOR_LOG(PSTR("UBX: started serial"));
       if (UBXSerial->hardwareSerial()) {
@@ -364,7 +369,7 @@ void UBXDetect(void)
 
   UBX.state.log_interval = 10;  // 1 second
   UBX.mode.send_UI_only = true; // send UI data ...
-  UBXTriggerTele();             // ... once at after start
+  MqttPublishTeleperiodSensor();  // ... once at after start
 }
 
 uint32_t UBXprocessGPS()
@@ -472,9 +477,9 @@ uint32_t UBXprocessGPS()
 #ifdef USE_FLOG
 void UBXsendHeader(void)
 {
-  WebServer->setContentLength(CONTENT_LENGTH_UNKNOWN);
-  WebServer->sendHeader(F("Content-Disposition"), F("attachment; filename=TASMOTA.gpx"));
-  WSSend(200, CT_STREAM, F(
+  Webserver->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  Webserver->sendHeader(F("Content-Disposition"), F("attachment; filename=TASMOTA.gpx"));
+  WSSend(200, CT_APP_STREAM, F(
     "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\r\n"
     "<GPX version=\"1.1\" creator=\"TASMOTA\" xmlns=\"http://www.topografix.com/GPX/1/1\" \r\n"
     "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\r\n"
@@ -494,13 +499,13 @@ void UBXsendRecord(uint8_t *buf)
 	dtostrfd((double)entry->lon/10000000.0f,7,lon);
 	snprintf_P(record, sizeof(record),PSTR("<trkpt\n\t lat=\"%s\" lon=\"%s\">\n\t<time>%s</time>\n</trkpt>\n"),lat ,lon, stime);
 	// DEBUG_SENSOR_LOG(PSTR("FLOG: DL %u %u"), Flog->sector.dword_buffer[k+j],Flog->sector.dword_buffer[k+j+1]);
-	WebServer->sendContent_P(record);
+	Webserver->sendContent_P(record);
 }
 
 void UBXsendFooter(void)
 {
-  WebServer->sendContent(F("</trkseg>\n</trk>\n</gpx>"));
-  WebServer->sendContent("");
+  Webserver->sendContent(F("</trkseg>\n</trk>\n</gpx>"));
+  Webserver->sendContent("");
   Rtc.user_time_entry = false; // we have blocked the main loop and want a new valid time
 }
 
@@ -557,17 +562,17 @@ void UBXSelectMode(uint16_t mode)
       break;
     case 4:
       Flog->startRecording(true);
-      AddLog_P(LOG_LEVEL_INFO, PSTR("UBX: start recording - appending"));
+      AddLog(LOG_LEVEL_INFO, PSTR("UBX: start recording - appending"));
       break;
     case 5:
       Flog->startRecording(false);
-      AddLog_P(LOG_LEVEL_INFO, PSTR("UBX: start recording - new log"));
+      AddLog(LOG_LEVEL_INFO, PSTR("UBX: start recording - new log"));
       break;
     case 6:
       if(Flog->recording == true){
         Flog->stopRecording();
       }
-      AddLog_P(LOG_LEVEL_INFO, PSTR("UBX: stop recording"));
+      AddLog(LOG_LEVEL_INFO, PSTR("UBX: stop recording"));
       break;
 #endif //USE_FLOG
     case 7:
@@ -583,6 +588,8 @@ void UBXSelectMode(uint16_t mode)
       break;
     case 10:
       UBX.mode.runningNTP = false;
+      UBXsendCFGLine(10); //NAV-POSLLH on
+      UBXsendCFGLine(11); //NAV-STATUS on
       break;
     case 11:
       UBX.mode.forceUTCupdate = true;
@@ -604,13 +611,12 @@ void UBXSelectMode(uint16_t mode)
       break;
     default:
       if (mode>1000 && mode <1066) {
-        // UBXSetRate(mode-1000); // min. 1001 = 0.001 Hz, but will be converted to 1/65535 anyway ~0.015 Hz, max. 2000 = 1.000 Hz
         UBXSetRate(mode-1000); // set interval between measurements in seconds from 1 to 65
       }
       break;
   }
   UBX.mode.send_UI_only = true;
-  UBXTriggerTele();
+  MqttPublishTeleperiodSensor();
 }
 
 /********************************************************************************************/
@@ -629,12 +635,15 @@ bool UBXHandlePOSLLH()
     UBX.rec_buffer.values.lon = UBX.Message.navPosllh.lon;
     DEBUG_SENSOR_LOG(PSTR("UBX: lat/lon: %i / %i"), UBX.rec_buffer.values.lat, UBX.rec_buffer.values.lon);
     DEBUG_SENSOR_LOG(PSTR("UBX: hAcc: %d"), UBX.Message.navPosllh.hAcc);
-    UBX.state.last_iTOW = UBX.Message.navPosllh.iTOW;
     UBX.state.last_alt = UBX.Message.navPosllh.alt;
     UBX.state.last_vAcc = UBX.Message.navPosllh.vAcc;
     UBX.state.last_hAcc = UBX.Message.navPosllh.hAcc;
     if (UBX.mode.send_when_new) {
-      UBXTriggerTele();
+      MqttPublishTeleperiodSensor();
+    }
+    if (UBX.mode.runningNTP){ // after receiving pos-data at least once -> go to pure NTP-mode
+      UBXsendCFGLine(7); //NAV-POSLLH off
+      UBXsendCFGLine(8); //NAV-STATUS off
     }
     return true; // new position
   } else {
@@ -657,9 +666,9 @@ void UBXHandleTIME()
 {
   DEBUG_SENSOR_LOG(PSTR("UBX: UTC-Time: %u-%u-%u %u:%u:%u"), UBX.Message.navTime.year, UBX.Message.navTime.month ,UBX.Message.navTime.day,UBX.Message.navTime.hour,UBX.Message.navTime.min,UBX.Message.navTime.sec);
   if (UBX.Message.navTime.valid.UTC == 1) {
+    UBX.state.timeOffset =  millis(); // iTOW%1000 should be 0 here, when NTP-server is enabled and in "pure mode"
     DEBUG_SENSOR_LOG(PSTR("UBX: UTC-Time is valid"));
-    if (Rtc.user_time_entry == false || UBX.mode.forceUTCupdate) {
-      AddLog_P(LOG_LEVEL_INFO, PSTR("UBX: UTC-Time is valid, set system time"));
+    if (Rtc.user_time_entry == false || UBX.mode.forceUTCupdate || UBX.mode.runningNTP) {
       TIME_T gpsTime;
       gpsTime.year = UBX.Message.navTime.year - 1970;
       gpsTime.month = UBX.Message.navTime.month;
@@ -667,7 +676,11 @@ void UBXHandleTIME()
       gpsTime.hour = UBX.Message.navTime.hour;
       gpsTime.minute = UBX.Message.navTime.min;
       gpsTime.second = UBX.Message.navTime.sec;
-      Rtc.utc_time = MakeTime(gpsTime);
+      UBX.rec_buffer.values.time = MakeTime(gpsTime);
+      if (UBX.mode.forceUTCupdate || Rtc.user_time_entry == false){
+        AddLog(LOG_LEVEL_INFO, PSTR("UBX: UTC-Time is valid, set system time"));
+        Rtc.utc_time = UBX.rec_buffer.values.time;
+      }
       Rtc.user_time_entry = true;
     }
   }
@@ -678,7 +691,7 @@ void UBXHandleOther(void)
   if (UBX.state.non_empty_loops>6) {  // we expect only 4-5 non-empty loops in a row, could change with other sensor speed (Hz)
     if(UBX.mode.runningVPort) return;
     UBXinitCFG();                     // this should only happen with lots of NMEA-messages, but it is only a guess!!
-    AddLog_P(LOG_LEVEL_ERROR, PSTR("UBX: possible device-reset, will re-init"));
+    AddLog(LOG_LEVEL_ERROR, PSTR("UBX: possible device-reset, will re-init"));
     UBXSerial->flush();
     UBX.state.non_empty_loops = 0;
   }
@@ -705,7 +718,7 @@ void UBXLoop50msec(void)
   }
   // handle NTP-server
   if(UBX.mode.runningNTP){
-    timeServer.processOneRequest(Rtc.utc_time, UBX.state.last_iTOW%1000);
+    timeServer.processOneRequest(UBX.rec_buffer.values.time, UBX.state.timeOffset - NTP_MILLIS_OFFSET);
   }
 }
 
@@ -888,7 +901,7 @@ bool Xsns60(uint8_t function)
         break;
 #ifdef USE_FLOG
       case FUNC_WEB_ADD_HANDLER:
-        WebServer->on("/UBX", UBXsendFile);
+        WebServer_on(PSTR("/UBX"), UBXsendFile);
         break;
 #endif //USE_FLOG
       case FUNC_JSON_APPEND:

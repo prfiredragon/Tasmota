@@ -1,7 +1,7 @@
 /*
   xsns_64_hrxl.ino - MaxBotix HRXL serial interface
 
-  Copyright (C) 2020  Jon Little
+  Copyright (C) 2021  Jon Little
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -41,9 +41,9 @@ bool hrxl_found = false;
 void HRXLInit(void)
 {
     hrxl_found = false;
-    if ((pin[GPIO_HRXL_RX] < 99))
+    if (PinUsed(GPIO_HRXL_RX))
     {
-        HRXLSerial = new TasmotaSerial(pin[GPIO_HRXL_RX], -1, 1);
+        HRXLSerial = new TasmotaSerial(Pin(GPIO_HRXL_RX), -1, 1);
         if (HRXLSerial->begin(9600))
         {
             if (HRXLSerial->hardwareSerial())
@@ -100,8 +100,7 @@ void HRXLShow(bool json)
 
 bool Xsns64(uint8_t function)
 {
-   if (pin[GPIO_HRXL_RX] >= 99)
-      return false;
+   if (!PinUsed(GPIO_HRXL_RX)) { return false; }
 
    switch (function)
    {
